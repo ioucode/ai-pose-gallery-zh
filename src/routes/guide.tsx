@@ -34,7 +34,7 @@ function GuidePage() {
           <Badge>3. 姿势 + 附图</Badge>
           <h3 className="mt-2 text-sm font-semibold">动作姿势库 (1,439)</h3>
           <p className="mt-1 text-xs text-muted-foreground">
-            挑选 5 视角 3D 素体白模或深度图（Depth），结合云端 API 或本地 ComfyUI 一键生成角色立绘。
+            挑选 5 视角 3D 素体白模或深度图（Depth），在合成台一键生成角色立绘（出图由站内 studio 提供）。
           </p>
         </div>
       </Section>
@@ -43,7 +43,7 @@ function GuidePage() {
         <div className="space-y-2.5 rounded-2xl bg-background p-4 text-xs leading-relaxed text-muted-foreground">
           <p>
             <strong className="text-foreground">1. 仅供学习与合法艺术创作（严禁违法）：</strong>
-            本项目（含网页工作台、本地 ComfyUI 插件与工作流模板）
+            本项目（含网页工作台）
             <strong className="text-foreground">仅供个人学习、人体结构研究、插画构图参考与技术交流使用</strong>
             。严禁使用本工具生成、制作或传播任何违反法律法规、淫秽色情、暴力违禁内容，严禁未经他人明确授权上传真实人物照片进行换脸或深伪合成（Deepfake）等侵犯他人肖像权、隐私权与名誉权的行为。
           </p>
@@ -54,7 +54,7 @@ function GuidePage() {
           </p>
           <p>
             <strong className="text-foreground">3. 隐私保护与使用者责任归属：</strong>
-            本工作台为纯前端本地应用，所有 AI 生图请求均由使用者自行配置的云端 API Key 或使用者本机 ComfyUI 环境直接执行，平台不收集、不存储任何用户上传的图片或生成结果。
+            出图由站内 studio 提供：生图时参考图与提示词会发送到站内 studio，生成结果与生成记录保存在 studio 及本机浏览器中，不对外公开。
             <strong className="text-foreground">因使用者违规使用或不当传播所产生的一切法律责任，均由使用者本人独立承担，与本项目及维护者无关。</strong>
           </p>
         </div>

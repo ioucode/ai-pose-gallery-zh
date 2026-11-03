@@ -55,7 +55,6 @@ export interface PortraitItem {
 }
 
 export interface ExtraReferenceImage {
-  role?: 'character_sheet'
   id: string
   name: string
   url: string
@@ -65,94 +64,32 @@ export interface RecipeState {
   portrait: PortraitItem | null
   costume: CostumeItem | null
   pose: PoseItem | null
-  workflowImages?: Record<string, ExtraReferenceImage>
-  workflowImagesIdentity?: string
   extraImages?: ExtraReferenceImage[]
 }
 
-export type ImageProviderId = 'gemini' | 'gpt' | 'qwen' | 'doubao' | 'comfyui'
-
-export interface ProviderEndpointConfig {
-  baseUrl: string
-  apiKey: string
+/** 出图统一走集群内 studio（同源 /api/studio/v1，OpenAI 兼容接口，令牌在服务端注入） */
+export interface StudioParams {
+  /** studio 的逻辑模型 ID，列表从 GET /api/studio/v1/models 动态获取 */
   model: string
-  customModel: string
-}
-
-export type ImagePassMode = 'url' | 'base64'
-
-export type WorkflowScalar = string | number | boolean
-
-export interface WorkflowParameterOverrides {
-  workflowId: string
-  values: Record<string, Record<string, WorkflowScalar>>
-}
-
-export interface ComfyUiParams {
-  parameterOverrides?: WorkflowParameterOverrides
-  workflowPreset: 'qwen2509_3img' | 'qwen2509_2img' | 'qwen21_3img' | 'qwen21_2img' | 'custom'
-  workflowJson: string
-  promptNodeId: string
-  portraitNodeId: string
-  costumeNodeId: string
-  poseNodeId: string
-  stitchedNodeId: string
-  randomizeSeed: boolean
-  /** 单次生成最长等待秒数 */
-  timeoutSec: number
-  /** 配置结构版本，用于迁移旧版默认值 */
-  configVersion?: number
-}
-
-export interface GptParams {
-  endpointMode: 'images_edits_json' | 'images_edits' | 'responses' | 'chat'
-  size: 'auto' | '1024x1536' | '1024x1024' | '1536x1024'
-  quality: 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
-  inputFidelity: 'high' | 'low'
-  background: 'auto' | 'opaque' | 'transparent'
-  outputFormat: 'png' | 'jpeg' | 'webp'
-  moderation: 'auto' | 'low'
-}
-
-export interface GeminiParams {
-  endpointMode: 'native' | 'openai_chat'
-  aspectRatio: '3:4' | '1:1' | '4:3' | '9:16' | '16:9'
-  imageSize: '1K' | '2K' | '4K'
-}
-
-export interface QwenParams {
-  size: '1024*1536' | '1328*1328' | '928*1664' | '1664*928'
-  promptExtend: boolean
-  watermark: boolean
-  negativePrompt: string
-  n: number
-}
-
-export interface DoubaoParams {
-  size: '2K' | '4K' | '1K' | '1728x2304' | '2048x2048' | '1440x2560' | '2560x1440'
-  sequentialImageGeneration: 'disabled' | 'auto'
-  watermark: boolean
-  responseFormat: 'b64_json' | 'url'
+  /** studio 接受比例串（2:3、16:9…）或像素尺寸；auto 表示不传 */
+  size: 'auto' | '2:3' | '3:4' | '1:1' | '4:3' | '3:2' | '9:16' | '16:9'
+  quality: 'auto' | 'low' | 'medium' | 'high'
 }
 
 export interface ApiConfig {
-  activeProvider: ImageProviderId
-  imagePassMode: ImagePassMode
-  useProxy: boolean
+  /** 配置结构版本：v4 起只剩 studio，旧版各厂商配置一律丢弃 */
+  configVersion: number
   stylePreset: string
+  /** 额外附带一张参考拼图（占 studio 4 张参考图名额中的 1 张） */
   sendStitchedSheet: boolean
-  providers: Record<ImageProviderId, ProviderEndpointConfig>
-  gptParams: GptParams
-  geminiParams: GeminiParams
-  qwenParams: QwenParams
-  doubaoParams: DoubaoParams
-  comfyuiParams: ComfyUiParams
+  studioParams: StudioParams
 }
 
 export interface GenerationHistoryItem {
   id: string
   createdAt: number
-  provider: ImageProviderId
+  /** 旧版记录可能是 gemini / gpt 等，仅作展示 */
+  provider: string
   model: string
   prompt: string
   imageUrl: string
