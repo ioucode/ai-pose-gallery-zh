@@ -12,32 +12,24 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { idbGet, idbSet } from '@/lib/idbStorage'
-import { parseParameterWorkflow, workflowIdentity } from '@/lib/comfyWorkflowParameters'
 import { recipeBackup } from '@/lib/recipeImages'
 import {
   buildRecipePrompt,
-  COMFYUI_WORKFLOW_TEMPLATES,
-  DEFAULT_COMFY_PRESET,
+  DEFAULT_STUDIO_MODEL,
   generateCharacterImage,
   type GenerationProgress,
-  PROVIDER_META,
+  STYLE_PRESETS,
   stitchRecipeCanvas,
 } from '@/services/aiGenerator'
 import type {
   ApiConfig,
-  ComfyUiParams,
   CostumeItem,
-  DoubaoParams,
   ExtraReferenceImage,
-  GeminiParams,
   GenerationHistoryItem,
-  GptParams,
-  ImageProviderId,
   PortraitItem,
   PoseItem,
-  ProviderEndpointConfig,
-  QwenParams,
   RecipeState,
+  StudioParams,
 } from '@/types/gallery'
 
 const CFG_KEY = 'pose_atlas_api_config_v3'
@@ -45,143 +37,38 @@ const RECIPE_KEY = 'pose_atlas_recipe_v3'
 const HISTORY_KEY = 'pose_atlas_history_v3'
 const SAFE_MODE_KEY = 'pose_atlas_safe_mode_v1'
 
-const COMFY_CONFIG_VERSION = 3
+/** 配置结构版本：v4 起出图只走站内 studio，旧版各厂商（Key、Base URL、ComfyUI 工作流等）配置一律丢弃 */
+const API_CONFIG_VERSION = 4
 
-const shouldEnableProxyByDefault = (provider?: ImageProviderId) =>
-  provider === 'qwen' || provider === 'doubao'
+const STUDIO_SIZES: StudioParams['size'][] = ['auto', '2:3', '3:4', '1:1', '4:3', '3:2', '9:16', '16:9']
+const STUDIO_QUALITIES: StudioParams['quality'][] = ['auto', 'low', 'medium', 'high']
 
 const DEFAULT_API_CONFIG: ApiConfig = {
-  activeProvider: 'gemini',
-  imagePassMode: 'url',
-  useProxy: false,
+  configVersion: API_CONFIG_VERSION,
   stylePreset: 'realistic',
   sendStitchedSheet: false,
-  providers: {
-    gemini: {
-      baseUrl: PROVIDER_META.gemini.defaultBaseUrl,
-      apiKey: '',
-      model: PROVIDER_META.gemini.models[0].value,
-      customModel: '',
-    },
-    gpt: {
-      baseUrl: PROVIDER_META.gpt.defaultBaseUrl,
-      apiKey: '',
-      model: PROVIDER_META.gpt.models[0].value,
-      customModel: '',
-    },
-    qwen: {
-      baseUrl: PROVIDER_META.qwen.defaultBaseUrl,
-      apiKey: '',
-      model: PROVIDER_META.qwen.models[0].value,
-      customModel: '',
-    },
-    doubao: {
-      baseUrl: PROVIDER_META.doubao.defaultBaseUrl,
-      apiKey: '',
-      model: PROVIDER_META.doubao.models[0].value,
-      customModel: '',
-    },
-    comfyui: {
-      baseUrl: PROVIDER_META.comfyui.defaultBaseUrl,
-      apiKey: '',
-      model: PROVIDER_META.comfyui.models[0].value,
-      customModel: '',
-    },
-  },
-  gptParams: {
-    endpointMode: 'images_edits_json',
-    size: '1024x1536',
-    quality: 'high',
-    inputFidelity: 'high',
-    background: 'auto',
-    outputFormat: 'png',
-    moderation: 'auto',
-  },
-  geminiParams: {
-    endpointMode: 'native',
-    aspectRatio: '3:4',
-    imageSize: '2K',
-  },
-  qwenParams: {
-    size: '1024*1536',
-    promptExtend: true,
-    watermark: false,
-    negativePrompt: '',
-    n: 1,
-  },
-  doubaoParams: {
-    size: '2K',
-    sequentialImageGeneration: 'disabled',
-    watermark: false,
-    responseFormat: 'b64_json',
-  },
-  comfyuiParams: {
-    workflowPreset: DEFAULT_COMFY_PRESET,
-    workflowJson: JSON.stringify(COMFYUI_WORKFLOW_TEMPLATES[DEFAULT_COMFY_PRESET].workflow, null, 2),
-    ...COMFYUI_WORKFLOW_TEMPLATES[DEFAULT_COMFY_PRESET].defaults,
-    randomizeSeed: true,
-    timeoutSec: 600,
-    configVersion: COMFY_CONFIG_VERSION,
+  studioParams: {
+    model: DEFAULT_STUDIO_MODEL,
+    size: '2:3',
+    quality: 'auto',
   },
 }
 
-// v1 → v2：旧版默认的 Qwen 2.1 预设引用了本机通常不存在的模型，自动切换为 Qwen Image Edit 2509
-const LEGACY_COMFY_BASE_URLS = ['http://127.0.0.1:8188', 'http://localhost:8188']
-
-function migrateComfy(
-  provider: ApiConfig['providers']['comfyui'],
-  params: ApiConfig['comfyuiParams']
-): { provider: ApiConfig['providers']['comfyui']; params: ApiConfig['comfyuiParams'] } {
-  if ((params.configVersion ?? 1) >= COMFY_CONFIG_VERSION) return { provider, params }
-  const nextParams = { ...params, configVersion: COMFY_CONFIG_VERSION }
-  if (params.workflowPreset === 'qwen21_3img' || params.workflowPreset === 'qwen21_2img') {
-    Object.assign(nextParams, {
-      workflowPreset: DEFAULT_COMFY_PRESET,
-      workflowJson: JSON.stringify(COMFYUI_WORKFLOW_TEMPLATES[DEFAULT_COMFY_PRESET].workflow, null, 2),
-      ...COMFYUI_WORKFLOW_TEMPLATES[DEFAULT_COMFY_PRESET].defaults,
-    })
-  }
-  const nextProvider = { ...provider }
-  if (!nextProvider.baseUrl.trim() || LEGACY_COMFY_BASE_URLS.includes(nextProvider.baseUrl.trim())) {
-    nextProvider.baseUrl = PROVIDER_META.comfyui.defaultBaseUrl
-  }
-  if (!PROVIDER_META.comfyui.models.some((m) => m.value === nextProvider.model)) {
-    nextProvider.model = PROVIDER_META.comfyui.models[0].value
-  }
-  return { provider: nextProvider, params: nextParams }
-}
-
+// 本地存储的配置只挑认识且合法的字段，其余（旧版 providers、gptParams、comfyuiParams、useProxy…）直接忽略，
+// 残留配置不会报错，下次保存时也会被覆盖掉
 function mergeStoredConfig(raw: unknown): ApiConfig {
   if (!raw || typeof raw !== 'object') return DEFAULT_API_CONFIG
-  const obj = raw as Partial<ApiConfig>
-  const storedVer = obj.comfyuiParams?.configVersion ?? 1
-  const comfy = migrateComfy(
-    { ...DEFAULT_API_CONFIG.providers.comfyui, ...obj.providers?.comfyui },
-    { ...DEFAULT_API_CONFIG.comfyuiParams, configVersion: 1, ...obj.comfyuiParams }
-  )
-  const activeProvider = obj.activeProvider ?? DEFAULT_API_CONFIG.activeProvider
-  // v3 起服务端 CORS 代理默认关闭，仅在切换到 Qwen / Doubao 时自动关联开启
-  const useProxy =
-    storedVer < 3
-      ? shouldEnableProxyByDefault(activeProvider)
-      : (obj.useProxy ?? shouldEnableProxyByDefault(activeProvider))
+  const obj = raw as Record<string, any>
+  const sp = obj.studioParams && typeof obj.studioParams === 'object' ? obj.studioParams : {}
   return {
-    ...DEFAULT_API_CONFIG,
-    ...obj,
-    activeProvider,
-    useProxy,
-    providers: {
-      gemini: { ...DEFAULT_API_CONFIG.providers.gemini, ...obj.providers?.gemini },
-      gpt: { ...DEFAULT_API_CONFIG.providers.gpt, ...obj.providers?.gpt },
-      qwen: { ...DEFAULT_API_CONFIG.providers.qwen, ...obj.providers?.qwen },
-      doubao: { ...DEFAULT_API_CONFIG.providers.doubao, ...obj.providers?.doubao },
-      comfyui: comfy.provider,
+    configVersion: API_CONFIG_VERSION,
+    stylePreset: typeof obj.stylePreset === 'string' && obj.stylePreset in STYLE_PRESETS ? obj.stylePreset : DEFAULT_API_CONFIG.stylePreset,
+    sendStitchedSheet: typeof obj.sendStitchedSheet === 'boolean' ? obj.sendStitchedSheet : DEFAULT_API_CONFIG.sendStitchedSheet,
+    studioParams: {
+      model: typeof sp.model === 'string' && sp.model.trim() ? sp.model.trim() : DEFAULT_STUDIO_MODEL,
+      size: STUDIO_SIZES.includes(sp.size) ? sp.size : DEFAULT_API_CONFIG.studioParams.size,
+      quality: STUDIO_QUALITIES.includes(sp.quality) ? sp.quality : DEFAULT_API_CONFIG.studioParams.quality,
     },
-    gptParams: { ...DEFAULT_API_CONFIG.gptParams, ...obj.gptParams },
-    geminiParams: { ...DEFAULT_API_CONFIG.geminiParams, ...obj.geminiParams },
-    qwenParams: { ...DEFAULT_API_CONFIG.qwenParams, ...obj.qwenParams },
-    doubaoParams: { ...DEFAULT_API_CONFIG.doubaoParams, ...obj.doubaoParams },
-    comfyuiParams: comfy.params,
   }
 }
 
@@ -215,16 +102,10 @@ interface StudioContextValue {
   addExtraImage: (item: { name: string; url: string }) => void
   removeExtraImage: (id: string) => void
   updateExtraImageName: (id: string, name: string) => void
-  setWorkflowImage: (nodeId: string, image: ExtraReferenceImage | null, identity: string) => void
   clearRecipe: () => void
   randomizeRecipe: (pools: { portraits?: PortraitItem[]; costumes?: CostumeItem[]; poses?: PoseItem[] }) => void
   updateApiConfig: (patch: Partial<ApiConfig>) => void
-  updateProviderConfig: (provider: ImageProviderId, patch: Partial<ProviderEndpointConfig>) => void
-  updateGptParams: (patch: Partial<GptParams>) => void
-  updateGeminiParams: (patch: Partial<GeminiParams>) => void
-  updateQwenParams: (patch: Partial<QwenParams>) => void
-  updateDoubaoParams: (patch: Partial<DoubaoParams>) => void
-  updateComfyUiParams: (patch: Partial<ComfyUiParams>) => void
+  updateStudioParams: (patch: Partial<StudioParams>) => void
   addHistory: (item: Omit<GenerationHistoryItem, 'id' | 'createdAt'>) => void
   removeHistoryItem: (id: string) => void
   clearHistory: () => void
@@ -313,8 +194,6 @@ export function StudioProvider({ children }: { children: ReactNode }) {
           portrait: savedRecipe.portrait ?? null,
           costume: savedRecipe.costume ?? null,
           pose: savedRecipe.pose ?? null,
-          workflowImages: savedRecipe.workflowImages ?? {},
-          workflowImagesIdentity: savedRecipe.workflowImagesIdentity,
           extraImages: Array.isArray(savedRecipe.extraImages) ? savedRecipe.extraImages : [],
         })
       }
@@ -459,34 +338,6 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     }))
   }
 
-  const setWorkflowImage = (nodeId: string, image: ExtraReferenceImage | null, identity: string) => {
-    if (identity !== workflowIdentity(apiConfig.comfyuiParams.workflowJson)) return
-    setRecipe((r) => {
-      const workflowImages = r.workflowImagesIdentity === identity ? { ...r.workflowImages } : {}
-      if (image) workflowImages[nodeId] = image
-      else delete workflowImages[nodeId]
-      return { ...r, workflowImages, workflowImagesIdentity: identity }
-    })
-  }
-
-  const activeComfyParams = apiConfig.comfyuiParams
-  useEffect(() => {
-    if (!idbHydrated) return
-    const cp = activeComfyParams
-    const identity = workflowIdentity(cp.workflowJson)
-    const workflow = parseParameterWorkflow(cp.workflowJson)
-    const mapped = [cp.portraitNodeId, cp.costumeNodeId, cp.poseNodeId, cp.stitchedNodeId]
-    const ids = new Set(Object.entries(workflow || {}).filter(([id, node]) => !mapped.includes(id) && typeof node.inputs.image === 'string').map(([id]) => id))
-    // IndexedDB 恢复与工作流变更同步时清理失效映射。
-    // oxlint-disable-next-line react/set-state-in-effect
-    setRecipe((r) => {
-      const entries = Object.entries(r.workflowImages || {})
-      const kept = r.workflowImagesIdentity === identity ? entries.filter(([id]) => ids.has(id)) : []
-      if (entries.length === kept.length && r.workflowImagesIdentity === identity) return r
-      return { ...r, workflowImages: Object.fromEntries(kept), workflowImagesIdentity: identity }
-    })
-  }, [activeComfyParams, idbHydrated])
-
   const clearRecipe = () => {
     setRecipe({ portrait: null, costume: null, pose: null, extraImages: [] })
     toast.success('已清空配方')
@@ -513,46 +364,11 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   }
 
   const updateApiConfig = (patch: Partial<ApiConfig>) => {
-    setApiConfig((prev) => {
-      const next = { ...prev, ...patch }
-      if (patch.activeProvider && patch.useProxy === undefined) {
-        next.useProxy = shouldEnableProxyByDefault(patch.activeProvider)
-      }
-      return next
-    })
+    setApiConfig((prev) => ({ ...prev, ...patch }))
   }
 
-  const updateProviderConfig = (provider: ImageProviderId, patch: Partial<ProviderEndpointConfig>) => {
-    setApiConfig((prev) => ({
-      ...prev,
-      providers: {
-        ...prev.providers,
-        [provider]: {
-          ...prev.providers[provider],
-          ...patch,
-        },
-      },
-    }))
-  }
-
-  const updateGptParams = (patch: Partial<GptParams>) => {
-    setApiConfig((prev) => ({ ...prev, gptParams: { ...prev.gptParams, ...patch } }))
-  }
-
-  const updateGeminiParams = (patch: Partial<GeminiParams>) => {
-    setApiConfig((prev) => ({ ...prev, geminiParams: { ...prev.geminiParams, ...patch } }))
-  }
-
-  const updateQwenParams = (patch: Partial<QwenParams>) => {
-    setApiConfig((prev) => ({ ...prev, qwenParams: { ...prev.qwenParams, ...patch } }))
-  }
-
-  const updateDoubaoParams = (patch: Partial<DoubaoParams>) => {
-    setApiConfig((prev) => ({ ...prev, doubaoParams: { ...prev.doubaoParams, ...patch } }))
-  }
-
-  const updateComfyUiParams = (patch: Partial<ComfyUiParams>) => {
-    setApiConfig((prev) => ({ ...prev, comfyuiParams: { ...prev.comfyuiParams, ...patch } }))
+  const updateStudioParams = (patch: Partial<StudioParams>) => {
+    setApiConfig((prev) => ({ ...prev, studioParams: { ...prev.studioParams, ...patch } }))
   }
 
   const addHistory = (item: Omit<GenerationHistoryItem, 'id' | 'createdAt'>) => {
@@ -590,12 +406,9 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     if (isGeneratingRef.current) return
     const recipeSnapshot = recipe
     const configSnapshot = apiConfig
-    const pCfg = configSnapshot.providers[configSnapshot.activeProvider]
-    const modelName = configSnapshot.activeProvider === 'comfyui'
-      ? 'ComfyUI 工作流'
-      : pCfg.model === 'custom' ? pCfg.customModel || 'custom' : pCfg.model
+    const modelName = configSnapshot.studioParams.model
     const finalPrompt =
-      overridePrompt ?? customPrompt ?? buildRecipePrompt(recipeSnapshot, configSnapshot.stylePreset, configSnapshot.activeProvider === 'comfyui' && recipeSnapshot.workflowImagesIdentity === workflowIdentity(configSnapshot.comfyuiParams.workflowJson) ? Object.values(recipeSnapshot.workflowImages || {}) : [])
+      overridePrompt ?? customPrompt ?? buildRecipePrompt(recipeSnapshot, configSnapshot.stylePreset)
 
     isGeneratingRef.current = true
     setIsGenerating(true)
@@ -617,9 +430,6 @@ export function StudioProvider({ children }: { children: ReactNode }) {
         recipeSnapshot.costume?.source === 'upload' ? recipeSnapshot.costume.服装名称 : recipeSnapshot.costume?.分类,
         recipeSnapshot.pose ? `${recipeSnapshot.pose.姿势名称}${recipeSnapshot.pose.角度 ? `(${recipeSnapshot.pose.角度})` : ''}` : null,
         extraCount ? `+${extraCount}附图` : null,
-        ...(configSnapshot.activeProvider === 'comfyui' && recipeSnapshot.workflowImagesIdentity === workflowIdentity(configSnapshot.comfyuiParams.workflowJson)
-          ? Object.values(recipeSnapshot.workflowImages || {}).filter((image) => image?.url).map((image) => image.role === 'character_sheet' ? '角色设定集' : image.name)
-          : []),
       ]
         .filter(Boolean)
         .join(' + ')
@@ -673,16 +483,10 @@ export function StudioProvider({ children }: { children: ReactNode }) {
         addExtraImage,
         removeExtraImage,
         updateExtraImageName,
-        setWorkflowImage,
         clearRecipe,
         randomizeRecipe,
         updateApiConfig,
-        updateProviderConfig,
-        updateGptParams,
-        updateGeminiParams,
-        updateQwenParams,
-        updateDoubaoParams,
-        updateComfyUiParams,
+        updateStudioParams,
         addHistory,
         removeHistoryItem,
         clearHistory,

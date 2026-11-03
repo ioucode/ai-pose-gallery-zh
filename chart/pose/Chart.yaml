@@ -1,0 +1,6 @@
+apiVersion: v2
+name: pose
+description: pose(AI 姿势图库,pose.codearea.cc)集群版的工作负载(Deployment pose、Service pose)。证书/NetPol/HTTPRoute/Secret 在 k8s-deploy 的 apps/pose 里由 GitRepo 管;图片(/img、/thumbs)仍由 CF Worker pose-gallery 提供。
+type: application
+# 版本号由 CI 打包时覆盖为 1.<run_number>.<run_attempt>,集群里 HelmOp 按 semver 轮询取最新
+version: 0.0.0

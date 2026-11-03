@@ -1,6 +1,6 @@
-import { onRequestPost, type ProxyEnv } from './functions/api/proxy'
-
-export interface Env extends ProxyEnv {
+// codearea 部署：主站已迁到 k3s（deploy/web、chart/pose），出图走集群内 studio；
+// 这个 Worker 只经 CF 路由接 pose.codearea.cc/img/*、/thumbs/*，原样返回静态图片。
+export interface Env {
   ASSETS: {
     fetch: (request: Request) => Promise<Response>
   }
@@ -8,20 +8,6 @@ export interface Env extends ProxyEnv {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url)
-
-    // Handle /api/proxy CORS forwarding for DashScope (Qwen) & Volcengine Ark (Doubao)
-    if (url.pathname === '/api/proxy') {
-      if (request.method === 'POST') {
-        return onRequestPost({ request, env })
-      }
-      return new Response(JSON.stringify({ error: { message: 'Method Not Allowed' } }), {
-        status: 405,
-        headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      })
-    }
-
-    // Fallback to static assets binding
     return env.ASSETS.fetch(request)
   },
 }

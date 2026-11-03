@@ -1,20 +1,62 @@
-# codearea 构建(fork 自加):CI 只构建,产物打成镜像推 GHCR(ghcr.io/ioucode/ai-pose-gallery-zh),
-# 部署由 ioucode/cf-workers 的 pose-gallery/deploy.sh 在本机执行(拉镜像 → wrangler 上传静态资源 + Worker)。
-# 镜像内容:/dist(静态站点,含 img/thumbs/data)、/worker/worker.js(打包好的 Worker 入口)。
+# codearea 构建(fork 自加)。main 上产出两样东西:
+# 1. 集群版 web 镜像 ghcr.io/ioucode/ai-pose-gallery-zh-web(非 root nginx + 站点,不含 img/、thumbs/)和 chart
+#    oci://ghcr.io/ioucode/charts/pose;集群里的 HelmOp(k8s-deploy cluster/helmops/pose.yaml)每分钟轮询,取最新 semver 部署。
+#    不回写 k8s-deploy,digest 在本 job 内直接写进 chart values(不经 artifact 传递)。
+# 2. Worker 产物镜像 ghcr.io/ioucode/ai-pose-gallery-zh(/dist + /worker/worker.js),由 ioucode/cf-workers 的
+#    pose-gallery/deploy.sh 在本机上传;Worker 现在只经 CF 路由服务 pose.codearea.cc/img/*、/thumbs/*。
+# PR 只做类型检查 + 前端构建 + helm lint,不推任何东西。
 name: codearea
 
 on:
   push:
     branches: [main]
+    paths-ignore: ['docs/**', 'deploy/k8s-deploy/**', '**.md']
+  pull_request:
+    paths-ignore: ['docs/**', 'deploy/k8s-deploy/**', '**.md']
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
 
+# 同一分支 / PR 的新推送取消还在跑的旧运行
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  check:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      # 不拉 img/、thumbs/(约 1.2 GB),只构建前端用不到
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            /*
+            !/img/
+            !/thumbs/
+          sparse-checkout-cone-mode: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: 类型检查 + 构建前端
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - uses: azure/setup-helm@v4
+      - name: helm lint
+        run: helm lint chart/pose --set digest=sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+  build:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -37,7 +79,50 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: 产物推 GHCR
+
+      # ---- 集群版 web 镜像(先于下面的 mv dist) ----
+      - name: 组装 web 镜像上下文
+        run: |
+          set -euo pipefail
+          mkdir -p ctx-web/html
+          # img/、thumbs/ 由 CF Worker 路由提供;_headers 已转写进 nginx 配置
+          tar -C dist --exclude=./img --exclude=./thumbs --exclude=./_headers -cf - . | tar -C ctx-web/html -xf -
+          cp deploy/web/Dockerfile deploy/web/default.conf.template ctx-web/
+          test -f ctx-web/html/index.html
+          echo "web files: $(find ctx-web/html -type f | wc -l)  size: $(du -sh ctx-web/html | cut -f1)"
+      - uses: docker/build-push-action@v6
+        id: web
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false  # 构建记录会作为 artifact 上传,账户 artifact 额度只有 500MB 且常满
+        with:
+          context: ctx-web
+          platforms: linux/arm64
+          provenance: false
+          push: true
+          tags: ghcr.io/ioucode/ai-pose-gallery-zh-web:${{ github.sha }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+      - name: Summary
+        run: echo "web image: ghcr.io/ioucode/ai-pose-gallery-zh-web@${{ steps.web.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+      - uses: azure/setup-helm@v4
+        if: github.ref == 'refs/heads/main'
+      - name: 打包 chart 推到 GHCR
+        if: github.ref == 'refs/heads/main'
+        env:
+          DIGEST: ${{ steps.web.outputs.digest }}
+          # run_attempt 进版本号:同一个 run 重跑也会得到更大的版本,HelmOp 才会再部署一次
+          VERSION: 1.${{ github.run_number }}.${{ github.run_attempt }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$DIGEST"
+          sed -i -E "s#^digest:.*#digest: ${DIGEST}#" chart/pose/values.yaml
+          helm lint chart/pose
+          helm package chart/pose --version "$VERSION" --app-version "${GITHUB_SHA::7}" -d "$RUNNER_TEMP"
+          printf '%s' "$GHCR_TOKEN" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm push "$RUNNER_TEMP/pose-$VERSION.tgz" oci://ghcr.io/ioucode/charts
+
+      # ---- Worker 产物镜像(只服务图片,部署见 cf-workers/pose-gallery/deploy.sh) ----
+      - name: Worker 产物推 GHCR
         run: |
           set -euo pipefail
           mkdir -p ctx/worker && mv dist ctx/dist && cp worker-out/worker.js ctx/worker/

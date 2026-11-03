@@ -1,0 +1,113 @@
+# pose 集群版 nginx 配置（模板）。容器启动时由 nginx 官方镜像的 20-envsubst-on-templates.sh 渲染到 /etc/nginx/conf.d/。
+# 只替换 NGINX_ENVSUBST_FILTER 匹配的环境变量（见 Dockerfile），nginx 自己的 $变量 不受影响：
+#   STUDIO_IMAGE_API_KEY   studio 调用方令牌（Secret pose-secrets），只在服务端注入，浏览器拿不到
+#   STUDIO_UPSTREAM        studio Service 地址（须写 FQDN：变量形式的 proxy_pass 走 resolver，不认 search 域）
+#   NGINX_LOCAL_RESOLVERS  15-local-resolvers.envsh 从 /etc/resolv.conf 取的集群 DNS
+#
+# 站点静态文件（不含 img/、thumbs/，那两类由 CF Worker 路由 pose.codearea.cc/img/*、/thumbs/* 提供）在 /usr/share/nginx/html。
+
+resolver ${NGINX_LOCAL_RESOLVERS} valid=30s ipv6=off;
+resolver_timeout 5s;
+
+# 缓存头沿用原 _headers（Cloudflare Pages/Workers 规则）；/api/* 不加，交给上游
+map $uri $pose_cache_control {
+  default             "public, max-age=0, must-revalidate";
+  ~^/api/             "";
+  ~^/assets/          "public, max-age=31536000, immutable";
+  ~^/data/            "public, max-age=86400";
+  /robots.txt         "public, max-age=3600";
+  /sitemap.xml        "public, max-age=3600";
+  /og-cover.jpg       "public, max-age=86400";
+}
+
+# /api/studio/ 只放行这 5 个接口（方法 + 路径一起匹配），其余一律 404；捕获去掉 /api/studio 前缀后的路径。
+# 用 $uri（已解码、已规范化），query string 不转发
+map "$request_method:$uri" $studio_path {
+  default "";
+  "~^POST:/api/studio/(v1/images/(?:generations|edits))$"  $1;
+  "~^GET:/api/studio/(v1/models)$"                         $1;
+  "~^GET:/api/studio/(v1/jobs/[0-9A-Za-z-]{1,64})$"        $1;
+  "~^GET:/api/studio/(v1/files/[0-9A-Za-z-]{1,64})$"       $1;
+}
+
+server {
+  listen 8080 default_server;
+  server_name _;
+  root /usr/share/nginx/html;
+
+  server_tokens off;
+  absolute_redirect off;
+  charset utf-8;
+
+  gzip on;
+  gzip_min_length 1024;
+  gzip_types text/plain text/css text/csv application/javascript application/json application/xml image/svg+xml;
+
+  add_header Cache-Control $pose_cache_control;
+  add_header X-Content-Type-Options nosniff;
+  add_header Referrer-Policy strict-origin-when-cross-origin;
+
+  location = /healthz {
+    access_log off;
+    default_type text/plain;
+    return 200 "ok\n";
+  }
+
+  # 图片不在本镜像里：正常应被 CF Worker 路由截走；漏到这里说明路由没配好，直接 404 而不是回落成 index.html
+  location /img/ {
+    return 404;
+  }
+  location /thumbs/ {
+    return 404;
+  }
+
+  # 带 hash 的构建产物与数据文件：不存在就 404，不做 SPA 回退
+  location /assets/ {
+    try_files $uri =404;
+  }
+  location /data/ {
+    try_files $uri =404;
+  }
+
+  # ---------------------------------------------------------------------------
+  # 站内 studio 生图：/api/studio/v1/... → studio /v1/...
+  # studio 的 /v1 只接受集群内直连：带 X-Forwarded-For 会 404。所以不透传浏览器请求头（proxy_pass_request_headers off），
+  # 只白名单转发需要的几项，Authorization 换成服务端令牌；Cookie / CF / Authentik 头一律不带。
+  # ---------------------------------------------------------------------------
+  location /api/studio/ {
+    default_type application/json;
+    if ($studio_path = "") {
+      return 404 '{"error":{"message":"Not Found","type":"invalid_request_error","code":"not_found"}}';
+    }
+
+    client_max_body_size 30m;
+    client_body_buffer_size 1m;
+
+    proxy_pass_request_headers off;
+    proxy_set_header Authorization "Bearer ${STUDIO_IMAGE_API_KEY}";
+    proxy_set_header Content-Type $http_content_type;
+    proxy_set_header Accept $http_accept;
+    proxy_set_header X-Studio-Wait $http_x_studio_wait;
+    proxy_set_header X-Client-Ref $http_x_client_ref;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+
+    proxy_connect_timeout 5s;
+    proxy_send_timeout 60s;
+    # 前端带 X-Studio-Wait: 60，studio 最迟 60 秒回 504 + X-Studio-Job-Id；留余量但低于 Cloudflare 的 100 秒
+    proxy_read_timeout 90s;
+    proxy_buffering on;
+
+    proxy_pass ${STUDIO_UPSTREAM}/$studio_path;
+  }
+
+  location /api/ {
+    default_type application/json;
+    return 404 '{"error":{"message":"Not Found"}}';
+  }
+
+  # SPA：前端路由一律回退到 index.html
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+}

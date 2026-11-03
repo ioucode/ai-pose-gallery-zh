@@ -4,7 +4,6 @@ import { CopyIcon, DicesIcon, LoaderCircleIcon, PersonStandingIcon, ShirtIcon, S
 import { toast } from 'sonner'
 import { costumesQuery, portraitsQuery, posesQuery } from '@/api/gallery'
 import { poseThumbPath, referenceImageUrl } from '@/lib/recipeImages'
-import { workflowIdentity } from '@/lib/comfyWorkflowParameters'
 import { Button } from '@/components/ui/button'
 import { buildRecipePrompt } from '@/services/aiGenerator'
 import { useStudio } from '@/store/studioStore'
@@ -14,8 +13,7 @@ export function RecipeDock() {
   const { recipe, apiConfig, isGenerating, setPortrait, setCostume, setPose, toggleRecipePoseDepth, clearRecipe, randomizeRecipe } = useStudio()
   const qc = useQueryClient()
   const extraCount = (recipe.extraImages || []).length
-  const workflowImages = apiConfig.activeProvider === 'comfyui' && recipe.workflowImagesIdentity === workflowIdentity(apiConfig.comfyuiParams.workflowJson) ? Object.values(recipe.workflowImages || {}) : []
-  const count = [recipe.portrait, recipe.costume, recipe.pose].filter(Boolean).length + extraCount + workflowImages.length
+  const count = [recipe.portrait, recipe.costume, recipe.pose].filter(Boolean).length + extraCount
 
   // 在合成台、设置页、指南页隐藏底部悬浮栏，避免与页面内组件重复
   if (pathname.startsWith('/studio') || pathname.startsWith('/settings') || pathname.startsWith('/guide')) {
@@ -36,7 +34,7 @@ export function RecipeDock() {
   }
 
   const handleCopyPrompt = async () => {
-    const text = buildRecipePrompt(recipe, apiConfig.stylePreset, workflowImages)
+    const text = buildRecipePrompt(recipe, apiConfig.stylePreset)
     await navigator.clipboard.writeText(text)
     toast.success('已复制提示词')
   }

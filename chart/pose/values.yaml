@@ -1,0 +1,3 @@
+image: ghcr.io/ioucode/ai-pose-gallery-zh-web
+# CI 打包前写入本次构建的 digest;空值会让模板渲染失败,防止推出没钉 digest 的 chart
+digest: ""

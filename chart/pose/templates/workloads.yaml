@@ -1,0 +1,78 @@
+# pose 的 web 前端 + 同源反代(nginx,配置模板在 deploy/web/default.conf.template)。
+# 集群里 fleet-pose 这个 SA 只能改这里的对象,ValidatingAdmissionPolicy 还限制了镜像、SA、可引用的 Secret/ConfigMap/卷和特权字段
+# (见 k8s-deploy cluster/helmops/pose.yaml),改 Pod 规格要同步改那边,否则 HelmOp 部署会被拒。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pose
+  namespace: apps
+  labels: {app: pose}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels: {app: pose}
+  template:
+    metadata:
+      labels: {app: pose}
+    spec:
+      automountServiceAccountToken: false
+      # 不注入 *_SERVICE_HOST 之类的变量(envsubst 有过滤,这里再省一层)
+      enableServiceLinks: false
+      nodeSelector: {kubernetes.io/hostname: arm}
+      imagePullSecrets: [{name: ghcr-pull-secret}]
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        # nginx-unprivileged 镜像内置的 nginx 用户
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: pose
+          image: {{ printf "%s@%s" .Values.image (required "digest 不能为空" .Values.digest) | quote }}
+          imagePullPolicy: IfNotPresent
+          env:
+            # studio 生图总入口的调用方令牌(studio 侧 STUDIO_API_CLIENTS 里的 pose),由 nginx 注入 /api/studio/ 的 Authorization
+            - name: STUDIO_IMAGE_API_KEY
+              valueFrom: {secretKeyRef: {name: pose-secrets, key: STUDIO_IMAGE_API_KEY}}
+            # studio Service 只开 80 端口(容器端口 8000);变量形式的 proxy_pass 走 resolver,必须写 FQDN
+            - name: STUDIO_UPSTREAM
+              value: http://studio.apps.svc.cluster.local:80
+          ports:
+            - {name: http, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 5m, memory: 16Mi}
+            limits: {cpu: 500m, memory: 96Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            # 启动时 envsubst 把模板渲染到这里
+            - {name: conf, mountPath: /etc/nginx/conf.d}
+            # pid 与 client_body / proxy 临时文件(生图上传单次 ≤30 MB)
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: conf
+          emptyDir: {sizeLimit: 1Mi}
+        - name: tmp
+          emptyDir: {sizeLimit: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pose
+  namespace: apps
+spec:
+  selector: {app: pose}
+  ports:
+    - {name: http, port: 80, targetPort: http}
