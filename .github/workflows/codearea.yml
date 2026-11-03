@@ -102,7 +102,8 @@ jobs:
           tags: ghcr.io/ioucode/ai-pose-gallery-zh-web:${{ github.sha }}
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
       - name: Summary
-        run: echo "web image: ghcr.io/ioucode/ai-pose-gallery-zh-web@${{ steps.web.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "web image: ghcr.io/ioucode/ai-pose-gallery-zh-web@${{ steps.web.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
       - uses: azure/setup-helm@v4
         if: github.ref == 'refs/heads/main'
       - name: 打包 chart 推到 GHCR
